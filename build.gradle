@@ -1,0 +1,88 @@
+plugins {
+    id 'java'
+    id 'scala'
+}
+
+group = 'io.openlineage'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    all {
+        resolutionStrategy {
+            force 'org.scala-lang:scala-library:2.12.17'
+            force 'org.scala-lang:scala-reflect:2.12.17'
+            // Force Jackson versions to match Spark 3.5.1 exactly
+            force 'com.fasterxml.jackson.core:jackson-core:2.15.2'
+            force 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
+            force 'com.fasterxml.jackson.core:jackson-annotations:2.15.2'
+            force 'com.fasterxml.jackson.module:jackson-module-scala_2.12:2.15.2'
+            force 'com.fasterxml.jackson.module:jackson-module-blackbird:2.15.2'
+            // Force consistent OpenLineage versions
+            force 'io.openlineage:openlineage-spark_2.12:1.37.0'
+        }
+        // Exclude conflicting transitive dependencies
+        exclude group: 'io.openlineage.spark.shaded.com.fasterxml.jackson.core'
+        exclude group: 'io.openlineage.spark.shaded.com.fasterxml.jackson.module'
+    }
+}
+
+dependencies {
+    // Spark - including Kafka integration
+    implementation 'org.apache.spark:spark-core_2.12:3.5.1'
+    implementation 'org.apache.spark:spark-streaming_2.12:3.5.1'
+    implementation 'org.apache.spark:spark-sql_2.12:3.5.1'
+    implementation 'org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1'  // Added Kafka integration
+    implementation 'org.apache.spark:spark-streaming-kafka-0-10_2.12:3.5.1'  // Added Kafka streaming
+
+    // Scala - use exact same versions as Spark dependencies
+    implementation 'org.scala-lang:scala-library:2.12.17'
+    implementation 'org.scala-lang:scala-reflect:2.12.17'
+    implementation 'org.scala-lang:scala-compiler:2.12.17'
+
+    // Jackson - use the exact version that Spark 3.5.1 uses
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
+    implementation 'com.fasterxml.jackson.core:jackson-core:2.15.2'
+    implementation 'com.fasterxml.jackson.core:jackson-annotations:2.15.2'
+    implementation 'com.fasterxml.jackson.module:jackson-module-scala_2.12:2.15.2'
+    implementation 'com.fasterxml.jackson.module:jackson-module-blackbird:2.15.2'
+
+    // OpenLineage - main library and Spark integration
+\
+    implementation('io.openlineage:openlineage-spark_2.12:1.37.0') {
+        exclude group: 'com.fasterxml.jackson.core'
+        exclude group: 'com.fasterxml.jackson.module'
+    }
+
+    // Kafka with all required dependencies for embedded testing
+    implementation 'org.apache.kafka:kafka-clients:3.7.0'
+    testImplementation 'org.apache.kafka:kafka_2.12:3.7.0'
+    testImplementation 'org.apache.kafka:kafka_2.12:3.7.0:test'
+    testImplementation('org.springframework.kafka:spring-kafka-test:2.8.9') {
+        exclude group: 'com.fasterxml.jackson.core'
+        exclude group: 'com.fasterxml.jackson.module'
+    }
+    // Use Testcontainers for Kafka instead of Spring's embedded broker
+    testImplementation 'org.testcontainers:kafka:1.19.0'
+    testImplementation 'org.testcontainers:junit-jupiter:1.19.0'
+
+    // Logging
+    implementation 'org.slf4j:slf4j-api:2.0.12'
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.12'
+
+    // Testing
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testImplementation 'org.mockito:mockito-core:5.2.0'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
