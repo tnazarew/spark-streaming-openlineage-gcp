@@ -1,0 +1,18 @@
+
+ÿ
+google/protobuf/timestamp.protogoogle.protobuf";
+	Timestamp
+seconds (Rseconds
+nanos (RnanosB…
+com.google.protobufBTimestampProtoPZ2google.golang.org/protobuf/types/known/timestamppbø¢GPBªGoogle.Protobuf.WellKnownTypesbproto3
+ß
+&src/main/proto/transaction_event.protoio.openlineage.protogoogle/protobuf/timestamp.proto"Å
+TransactionEvent
+id (Rid+
+transaction_value (RtransactionValue
+customer_id (	R
+customerId
+country (	Rcountry9
+
+event_time (2.google.protobuf.TimestampR	eventTimeB.
+io.openlineage.protoBTransactionEventProtosbproto3

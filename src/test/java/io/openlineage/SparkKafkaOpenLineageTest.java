@@ -1,8 +1,5 @@
 package io.openlineage;
 
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
@@ -10,63 +7,89 @@ import org.apache.spark.streaming.Durations;
 import org.junit.jupiter.api.*;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
-import io.openlineage.client.OpenLineageClient;
-import io.openlineage.client.transports.ConsoleTransport;
 
 import java.util.*;
-import java.util.concurrent.TimeoutException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Comparator;
+import java.io.IOException;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-public class SparkKafkaOpenLineageTest {
-    private KafkaContainer kafkaContainer;
-    private SparkSession spark;
-    private JavaStreamingContext streamingContext;
-    private OpenLineageClient openLineageClient;
+public abstract class SparkKafkaOpenLineageTest {
+    protected KafkaContainer kafkaContainer;
+    protected SparkSession spark;
+    JavaStreamingContext streamingContext;
+
+    private static final String PROPERTIES_FILE = "openlineage-gcp.properties";
+
+    private String projectId;
+    private String location;
+    private String credentialsFile;
+
 
     @BeforeAll
-    void setup() {
+    @SuppressWarnings("deprecation")
+    void setup() throws IOException {
+        // Load configuration from properties file
+        loadOpenLineageConfig();
+
         // Start Kafka container
         kafkaContainer = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.4.0"));
         kafkaContainer.start();
-
-        // Create Spark session with full OpenLineage integration
         spark = SparkSession.builder()
-                .appName("SparkKafkaOpenLineageTest")
+                .appName(getTestName())
                 .master("local[2]")
-                // OpenLineage Spark integration configuration - use config file
-                .config("spark.extraListeners", "io.openlineage.spark.agent.OpenLineageSparkListener")
-                .config("spark.openlineage.transport.type", "file") // Use console transport for testing
-                .config("spark.openlineage.transport.location", "events/dupa.json") // Use console transport for testing
-                .config("spark.openlineage.namespace", "test")
-
-                // Basic Spark configuration
+                .config("spark.sql.warehouse.dir", "spark-warehouse")
+                .config("javax.jdo.option.ConnectionURL", "jdbc:derby:memory:metastore_db;create=true")
+                .config("javax.jdo.option.ConnectionDriverName", "org.apache.derby.jdbc.EmbeddedDriver")
+                .config("spark.sql.catalogImplementation", "hive")
                 .config("spark.driver.host", "localhost")
                 .config("spark.sql.adaptive.enabled", "false")
                 .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+
+                // OpenLineage Spark integration configuration - use config file
+                .config("spark.extraListeners", "io.openlineage.spark.agent.OpenLineageSparkListener")
+                .config("spark.openlineage.namespace", "test")
+                .config( "spark.openlineage.transport.type", "composite")
+                .config("spark.openlineage.transport.continueOnFailure","true")
+                .config("spark.openlineage.transport.transports.my_file.type", "file")
+                .config("spark.openlineage.transport.transports.my_file.location", String.format("events/%s.json", getTestName()))
+                .config("spark.openlineage.transport.transports.my_gcp.type", "gcplineage")
+                .config("spark.openlineage.transport.transports.my_gcp.projectId", projectId)
+                .config("spark.openlineage.transport.transports.my_gcp.location", location)
+                .config("spark.openlineage.transport.transports.my_gcp.mode", "ASYNC")
+                .config("spark.openlineage.transport.transports.my_gcp.credentialsFile", credentialsFile)
+
                 .getOrCreate();
 
         // Create JavaSparkContext from SparkSession
         JavaSparkContext jsc = new JavaSparkContext(spark.sparkContext());
         streamingContext = new JavaStreamingContext(jsc, Durations.seconds(1));
 
-        // OpenLineage client with console transport for additional manual event emission
-        openLineageClient = OpenLineageClient.builder()
-                .transport(new ConsoleTransport())
-                .build();
+    }
 
-        // Verify OpenLineage integration
-        System.out.println("=== Spark session created with OpenLineage integration ===");
-        System.out.println("Spark version: " + spark.version());
-        System.out.println("OpenLineage namespace: " + spark.conf().get("spark.openlineage.namespace"));
-        System.out.println("OpenLineage transport: " + spark.conf().get("spark.openlineage.transport.type"));
+    // Load OpenLineage GCP transport configuration from properties
+    private void loadOpenLineageConfig() throws IOException {
+        Properties props = new Properties();
+        props.load(getClass().getClassLoader().getResourceAsStream(PROPERTIES_FILE));
 
-        // Test if OpenLineage is properly configured
-        try {
-            Class.forName("io.openlineage.spark.agent.OpenLineageSparkListener");
-            System.out.println("=== OpenLineage Spark integration is active and will capture all SQL operations ===");
-        } catch (ClassNotFoundException e) {
-            System.out.println("=== Warning: OpenLineage Spark integration class not found ===");
+        // Validation: all required keys must be present and non-empty
+        List<String> missing = Stream.of("ol.gcp.projectId", "ol.gcp.location", "ol.gcp.credentialsFile")
+                .filter(k -> props.getProperty(k) == null || props.getProperty(k).trim().isEmpty())
+                .collect(Collectors.toList());
+        if (!missing.isEmpty()) {
+            String help = "Missing or empty OpenLineage GCP config: " + missing + "\n" +
+                    "Set non-empty values in '" + PROPERTIES_FILE + "'.";
+            throw new RuntimeException(help);
         }
+
+        // Assign validated values
+        projectId = props.getProperty("ol.gcp.projectId").trim();
+        location = props.getProperty("ol.gcp.location").trim();
+        credentialsFile = props.getProperty("ol.gcp.credentialsFile").trim();
     }
 
     @AfterAll
@@ -76,310 +99,148 @@ public class SparkKafkaOpenLineageTest {
         kafkaContainer.stop();
     }
 
-    private Properties createProducerProperties() {
+    // Remove any existing per-test events file before each test runs
+    @BeforeEach
+    void removeEventFileBeforeTest() {
+        try {
+            Path eventFile = Paths.get("events", String.format("%s.json", getTestName()));
+            if (Files.exists(eventFile)) {
+                Files.deleteIfExists(eventFile);
+            }
+        } catch (Exception e) {
+            // best-effort; log and continue
+            System.err.println("Failed to delete event file before test: " + e.getMessage());
+        }
+    }
+
+    // Central cleanup executed after each test to stop streaming queries, drop tables, and delete test dirs
+    @AfterEach
+    void cleanupAfterEach() {
+        if (spark == null) {
+            return;
+        }
+
+        // Stop any active streaming queries
+        try {
+            org.apache.spark.sql.streaming.StreamingQuery[] active = spark.streams().active();
+            if (active != null) {
+                for (org.apache.spark.sql.streaming.StreamingQuery q : active) {
+                    try {
+                        if (q != null && q.isActive()) {
+                            q.stop();
+                        }
+                    } catch (Exception e) {
+                        System.err.println("Failed to stop streaming query during cleanup: " + e.getMessage());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // ignore
+            System.err.println("Error enumerating streaming queries: " + e.getMessage());
+        }
+
+        // Drop any non-temporary tables in the catalog (best-effort)
+        try {
+            List<org.apache.spark.sql.catalog.Table> tables = spark.catalog().listTables().collectAsList();
+            for (org.apache.spark.sql.catalog.Table r : tables) {
+                try {
+                    String name = r.name();
+                    if (name != null && !name.isEmpty()) {
+                        spark.sql("DROP TABLE IF EXISTS " + name);
+                    }
+                } catch (Exception e) {
+                    System.err.println("Failed to drop table during cleanup: " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            // ignore
+            System.err.println("Error listing tables for cleanup: " + e.getMessage());
+        }
+
+        // Best-effort deletion of common directories used by tests
+        deleteDirectoryRecursive("spark-warehouse");
+        deleteDirectoryRecursive("spark-warehouse/spark-warehouse");
+        deleteDirectoryRecursive("checkpoint");
+
+        // (Intentionally no deletion of events/<testName>.json here — event files should only be removed before tests)
+    }
+
+    // Utility to delete a directory recursively using NIO
+    private void deleteDirectoryRecursive(String dirPath) {
+        // Build candidate paths to try: as given, user.dir + dirPath, and nested spark-warehouse variants
+        String userDir = System.getProperty("user.dir");
+        java.util.List<Path> candidates = new java.util.ArrayList<>();
+        candidates.add(Paths.get(dirPath));
+        candidates.add(Paths.get(userDir, dirPath));
+
+        // If dirPath contains spark-warehouse already, also try alternate nestings
+        String tableName = Paths.get(dirPath).getFileName().toString();
+        candidates.add(Paths.get(userDir, "spark-warehouse", tableName));
+        candidates.add(Paths.get(userDir, "spark-warehouse", "spark-warehouse", tableName));
+
+        for (Path dir : candidates) {
+            if (Files.exists(dir)) {
+                try (Stream<Path> stream = Files.walk(dir)) {
+                    stream.sorted(Comparator.reverseOrder())
+                            .map(Path::toFile)
+                            .forEach(f -> {
+                                if (!f.delete()) {
+                                    System.err.println("Failed to delete file during cleanup: " + f.getAbsolutePath());
+                                }
+                            });
+                } catch (IOException e) {
+                    // try next candidate
+                    System.err.println("Failed to delete candidate directory " + dir + ": " + e.getMessage());
+                }
+                // if deleted, break out
+                if (!Files.exists(dir)) {
+                    return;
+                }
+            }
+        }
+    }
+
+    protected Properties createProducerProperties() {
         Properties props = new Properties();
         props.put("bootstrap.servers", kafkaContainer.getBootstrapServers());
-        props.put("key.serializer", StringSerializer.class.getName());
-        props.put("value.serializer", StringSerializer.class.getName());
+        props.put("key.serializer", getKeySerializer());
+        props.put("value.serializer", getValueSerializer());
         return props;
     }
 
-    @Test
-    void testBasicPipelineEmitsOpenLineageEvents() throws TimeoutException {
-        String topic = "test-topic";
-        List<String> inputEvents = Arrays.asList("event1", "event2", "event3");
-
-        // Produce events to Kafka
-        Properties producerProps = createProducerProperties();
-        KafkaProducer<String, String> producer = new KafkaProducer<>(producerProps);
-        for (String event : inputEvents) {
-            producer.send(new ProducerRecord<>(topic, event));
-        }
-        producer.flush();
-        producer.close();
-
-        // Set up Spark Structured Streaming to read from Kafka
-        String kafkaBootstrapServers = kafkaContainer.getBootstrapServers();
-
-        // Use Spark Structured Streaming for simplicity
-        org.apache.spark.sql.Dataset<org.apache.spark.sql.Row> df = spark
-            .readStream()
-            .format("kafka")
-            .option("kafka.bootstrap.servers", kafkaBootstrapServers)
-            .option("subscribe", topic)
-            .option("startingOffsets", "earliest")
-            .load();
-
-        org.apache.spark.sql.Dataset<String> values = df.selectExpr("CAST(value AS STRING)").as(org.apache.spark.sql.Encoders.STRING());
-
-        // Collect results to memory sink
-        String outputTable = "outputTable";
-        org.apache.spark.sql.streaming.StreamingQuery query = values.writeStream()
-            .format("memory")
-            .queryName(outputTable)
-            .outputMode("append")
-            .trigger(org.apache.spark.sql.streaming.Trigger.ProcessingTime("1 second"))
-            .start();
-
-        // Wait for data to be processed - use a more robust approach
-        int maxWaitSeconds = 30;
-        int waitedSeconds = 0;
-
-        while (waitedSeconds < maxWaitSeconds) {
-            try {
-                Thread.sleep(1000);
-                waitedSeconds++;
-
-                // Check if we have any data processed
-                long count = spark.sql("SELECT COUNT(*) FROM " + outputTable).collectAsList().get(0).getLong(0);
-                if (count >= inputEvents.size()) {
-                    break; // We have all the data we expect
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Exception e) {
-                // Table might not exist yet, continue waiting
-            }
-        }
-
-        // Assert results
-        List<String> results = spark.sql("SELECT * FROM " + outputTable).as(org.apache.spark.sql.Encoders.STRING()).collectAsList();
-
-        // Stop the query
-        query.stop();
-
-        // Debug output
-        System.out.println("Expected events: " + inputEvents);
-        System.out.println("Actual results: " + results);
-        System.out.println("Results count: " + results.size());
-
-        Assertions.assertTrue(!results.isEmpty(), "Should have received some results from Kafka");
-        Assertions.assertTrue(results.containsAll(inputEvents), "All input events should be processed by Spark");
-
-        // NOTE: OpenLineage events are emitted via ConsoleTransport; in a real test, capture console output or mock transport to verify event structure
+    // Common helpers for tests
+    protected void registerCustomersView(String csvPath) {
+        spark.read()
+                .option("header", "true")
+                .option("inferSchema", "true")
+                .csv(csvPath)
+                .createOrReplaceTempView("customers");
     }
 
-    @Test
-    void testMicrobatchWindowOLStress() throws TimeoutException {
-        String topic = "test-topic-stress";
-        int eventCount = 100;
-        List<String> inputEvents = new ArrayList<>();
-        for (int i = 0; i < eventCount; i++) {
-            inputEvents.add("event" + i);
-        }
-
-        // Produce burst of events to Kafka
-        Properties producerProps = createProducerProperties();
-        KafkaProducer<String, String> producer = new KafkaProducer<>(producerProps);
-        for (String event : inputEvents) {
-            producer.send(new ProducerRecord<>(topic, event));
-        }
-        producer.flush();
-        producer.close();
-
-        // Set up Spark Structured Streaming with small microbatch interval
-        String kafkaBootstrapServers = kafkaContainer.getBootstrapServers();
-        org.apache.spark.sql.Dataset<org.apache.spark.sql.Row> df = spark
-            .readStream()
-            .format("kafka")
-            .option("kafka.bootstrap.servers", kafkaBootstrapServers)
-            .option("subscribe", topic)
-            .option("startingOffsets", "earliest")
-            .load();
-
-        org.apache.spark.sql.Dataset<String> values = df.selectExpr("CAST(value AS STRING)").as(org.apache.spark.sql.Encoders.STRING());
-
-        String outputTable = "stressOutputTable";
-        org.apache.spark.sql.streaming.StreamingQuery query = values.writeStream()
-            .format("memory")
-            .queryName(outputTable)
-            .outputMode("append")
-            .trigger(org.apache.spark.sql.streaming.Trigger.ProcessingTime("100 milliseconds"))
-            .start();
-
+    protected String getDescriptorPath(String resourceName) {
         try {
-            // Wait for streaming query to process data with timeout
-            query.awaitTermination(15000); // 15 seconds timeout for larger dataset
-        } catch (org.apache.spark.sql.streaming.StreamingQueryException e) {
-            // Query might terminate due to processing completion, which is expected
-        }
-
-        // Give additional time for processing if query is still active
-        if (query.isActive()) {
-            try {
-                Thread.sleep(5000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            java.net.URL resource = getClass().getClassLoader().getResource(resourceName);
+            if (resource == null) {
+                throw new RuntimeException("Resource not found: " + resourceName);
             }
+            return java.nio.file.Paths.get(resource.toURI()).toString();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to resolve descriptor path for " + resourceName + ": " + e.getMessage(), e);
         }
-
-        // Assert results
-        List<String> results = spark.sql("SELECT * FROM " + outputTable).as(org.apache.spark.sql.Encoders.STRING()).collectAsList();
-
-        // Stop the query
-        query.stop();
-
-        Assertions.assertEquals(eventCount, results.size(), "All burst events should be processed by Spark");
-
-        // NOTE: To count OpenLineage events, mock ConsoleTransport or capture output in a real test
     }
 
-    @Test
-    void testComplexSparkOperationsLineage() throws TimeoutException {
-        String topic = "test-topic-complex";
-        List<String> inputEvents = Arrays.asList("apple", "banana", "apple", "orange", "banana", "apple");
-
-        // Produce events to Kafka
-        Properties producerProps = createProducerProperties();
-        KafkaProducer<String, String> producer = new KafkaProducer<>(producerProps);
-        for (String event : inputEvents) {
-            producer.send(new ProducerRecord<>(topic, event));
-        }
-        producer.flush();
-        producer.close();
-
-        // Set up Spark Structured Streaming to read from Kafka
-        String kafkaBootstrapServers = kafkaContainer.getBootstrapServers();
-        org.apache.spark.sql.Dataset<org.apache.spark.sql.Row> df = spark
-            .readStream()
-            .format("kafka")
-            .option("kafka.bootstrap.servers", kafkaBootstrapServers)
-            .option("subscribe", topic)
-            .option("startingOffsets", "earliest")
-            .load();
-
-        org.apache.spark.sql.Dataset<String> values = df.selectExpr("CAST(value AS STRING)").as(org.apache.spark.sql.Encoders.STRING());
-
-        // Perform aggregation: count occurrences of each fruit
-        org.apache.spark.sql.Dataset<org.apache.spark.sql.Row> agg = values.groupBy("value").count();
-
-        String outputTable = "aggOutputTable";
-        org.apache.spark.sql.streaming.StreamingQuery query = agg.writeStream()
-            .format("memory")
-            .queryName(outputTable)
-            .outputMode("complete")
-            .start();
-
-        try {
-            // Wait for streaming query to process data with timeout
-            query.awaitTermination(10000); // 10 seconds timeout
-        } catch (org.apache.spark.sql.streaming.StreamingQueryException e) {
-            // Query might terminate due to processing completion, which is expected
-        }
-
-        // Give additional time for processing if query is still active
-        if (query.isActive()) {
-            try {
-                Thread.sleep(3000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
-
-        // Assert aggregation results
-        List<org.apache.spark.sql.Row> results = spark.sql("SELECT * FROM " + outputTable).collectAsList();
-
-        // Stop the query
-        query.stop();
-
-        Map<String, Long> expectedCounts = new HashMap<>();
-        expectedCounts.put("apple", 3L);
-        expectedCounts.put("banana", 2L);
-        expectedCounts.put("orange", 1L);
-
-        Assertions.assertEquals(3, results.size(), "Should have 3 unique fruits");
-
-        for (org.apache.spark.sql.Row row : results) {
-            String fruit = row.getString(0);
-            long count = row.getLong(1);
-            Assertions.assertEquals(expectedCounts.get(fruit), count, "Count for " + fruit + " should match");
-        }
-
-        // NOTE: OpenLineage events should capture lineage for aggregation; verify by capturing ConsoleTransport output or using a mock
+    protected org.apache.spark.sql.Dataset<org.apache.spark.sql.Row> readKafkaStream(String topic, boolean failOnDataLoss) {
+        org.apache.spark.sql.streaming.DataStreamReader reader = spark
+                .readStream()
+                .format("kafka")
+                .option("kafka.bootstrap.servers", kafkaContainer.getBootstrapServers())
+                .option("subscribe", topic)
+                .option("startingOffsets", "earliest")
+                .option("failOnDataLoss", String.valueOf(failOnDataLoss));
+        return reader.load();
     }
 
-    @Test
-    void testOpenLineageEventsWithConsoleTransport() throws TimeoutException {
-        String topic = "test-topic-lineage";
-        List<String> inputEvents = Arrays.asList("lineage-event1", "lineage-event2");
-
-        // Produce events to Kafka
-        Properties producerProps = createProducerProperties();
-        KafkaProducer<String, String> producer = new KafkaProducer<>(producerProps);
-        for (String event : inputEvents) {
-            producer.send(new ProducerRecord<>(topic, event));
-        }
-        producer.flush();
-        producer.close();
-
-        System.out.println("=== OpenLineage Events via Console Transport ===");
-
-        // Set up Spark Structured Streaming to read from Kafka
-        String kafkaBootstrapServers = kafkaContainer.getBootstrapServers();
-
-        // Create a streaming DataFrame that will trigger OpenLineage events
-        org.apache.spark.sql.Dataset<org.apache.spark.sql.Row> df = spark
-            .readStream()
-            .format("kafka")
-            .option("kafka.bootstrap.servers", kafkaBootstrapServers)
-            .option("subscribe", topic)
-            .option("startingOffsets", "earliest")
-            .load();
-
-        // Transform the data - this will create lineage information
-        org.apache.spark.sql.Dataset<org.apache.spark.sql.Row> transformed = df
-            .selectExpr("CAST(value AS STRING) as message", "timestamp")
-            .withColumn("processed_at", org.apache.spark.sql.functions.current_timestamp())
-            .withColumn("message_length", org.apache.spark.sql.functions.length(org.apache.spark.sql.functions.col("message")));
-
-        String outputTable = "lineageOutputTable";
-        org.apache.spark.sql.streaming.StreamingQuery query = transformed.writeStream()
-            .format("memory")
-            .queryName(outputTable)
-            .outputMode("append")
-            .trigger(org.apache.spark.sql.streaming.Trigger.ProcessingTime("2 seconds"))
-            .start();
-
-        // Wait for data to be processed
-        int maxWaitSeconds = 20;
-        int waitedSeconds = 0;
-
-        while (waitedSeconds < maxWaitSeconds) {
-            try {
-                Thread.sleep(1000);
-                waitedSeconds++;
-
-                // Check if we have any data processed
-                try {
-                    long count = spark.sql("SELECT COUNT(*) FROM " + outputTable).collectAsList().get(0).getLong(0);
-                    if (count >= inputEvents.size()) {
-                        break; // We have all the data we expect
-                    }
-                } catch (Exception e) {
-                    // Table might not exist yet, continue waiting
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-
-        // Perform a batch operation to trigger more lineage events
-        System.out.println("=== Performing batch operation to trigger additional lineage events ===");
-        org.apache.spark.sql.Dataset<org.apache.spark.sql.Row> batchResults = spark.sql("SELECT message, message_length FROM " + outputTable);
-        batchResults.show(); // This will trigger lineage events for the batch operation
-
-        // Stop the query
-        query.stop();
-
-        // Assert results
-        List<org.apache.spark.sql.Row> results = spark.sql("SELECT * FROM " + outputTable).collectAsList();
-        System.out.println("=== Final Results ===");
-        System.out.println("Processed " + results.size() + " events with lineage tracking");
-
-        Assertions.assertTrue(!results.isEmpty(), "Should have processed some events");
-        System.out.println("=== OpenLineage Console Transport Demo Complete ===");
-    }
+    protected abstract String getTestName();
+    protected abstract String getKeySerializer();
+    protected abstract String getValueSerializer();
 }
-

@@ -1,13 +1,24 @@
 plugins {
     id 'java'
     id 'scala'
+    id 'com.google.protobuf' version '0.9.4'
+    id 'com.github.davidmc24.gradle.plugin.avro' version '1.9.1'
 }
 
 group = 'io.openlineage'
 version = '1.0-SNAPSHOT'
 
 repositories {
+    mavenLocal()
     mavenCentral()
+    maven {
+        url "https://packages.confluent.io/maven/"
+    }
+}
+
+// Configure Scala plugin to use compatible Zinc compiler
+scala {
+    zincVersion = "1.9.6"
 }
 
 configurations {
@@ -22,7 +33,7 @@ configurations {
             force 'com.fasterxml.jackson.module:jackson-module-scala_2.12:2.15.2'
             force 'com.fasterxml.jackson.module:jackson-module-blackbird:2.15.2'
             // Force consistent OpenLineage versions
-            force 'io.openlineage:openlineage-spark_2.12:1.37.0'
+            force 'io.openlineage:openlineage-spark_2.12:1.38.0-SNAPSHOT'
         }
         // Exclude conflicting transitive dependencies
         exclude group: 'io.openlineage.spark.shaded.com.fasterxml.jackson.core'
@@ -51,11 +62,12 @@ dependencies {
     implementation 'com.fasterxml.jackson.module:jackson-module-blackbird:2.15.2'
 
     // OpenLineage - main library and Spark integration
-\
-    implementation('io.openlineage:openlineage-spark_2.12:1.37.0') {
+    implementation('io.openlineage:openlineage-spark_2.12:1.38.0-SNAPSHOT') {
         exclude group: 'com.fasterxml.jackson.core'
         exclude group: 'com.fasterxml.jackson.module'
     }
+
+    implementation('io.openlineage:transports-gcplineage:1.38.0-SNAPSHOT')
 
     // Kafka with all required dependencies for embedded testing
     implementation 'org.apache.kafka:kafka-clients:3.7.0'
@@ -69,6 +81,10 @@ dependencies {
     testImplementation 'org.testcontainers:kafka:1.19.0'
     testImplementation 'org.testcontainers:junit-jupiter:1.19.0'
 
+    // PostgreSQL and Testcontainers for database testing
+    testImplementation 'org.testcontainers:postgresql:1.19.0'
+    implementation 'org.postgresql:postgresql:42.6.0'
+
     // Logging
     implementation 'org.slf4j:slf4j-api:2.0.12'
     testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.12'
@@ -76,6 +92,65 @@ dependencies {
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testImplementation 'org.mockito:mockito-core:5.2.0'
+
+    // Derby for embedded metastore - use Java 8 compatible version
+    implementation 'org.apache.derby:derby:10.14.2.0'
+    implementation 'org.apache.derby:derbytools:10.14.2.0'
+
+    // Hive dependencies for catalog implementation
+    implementation 'org.apache.spark:spark-hive_2.12:3.5.1'
+    implementation 'org.apache.hadoop:hadoop-client:3.3.4'
+
+    // Avro dependencies
+    implementation 'org.apache.avro:avro:1.11.3'
+    implementation 'io.confluent:kafka-avro-serializer:7.4.0'
+
+    // Schema Registry dependencies
+    implementation ('io.confluent:kafka-schema-registry-client:7.4.0') {
+        exclude group: 'com.fasterxml.jackson.core'
+        exclude group: 'com.fasterxml.jackson.module'
+    }
+    testImplementation ('io.confluent:kafka-schema-registry:7.4.0'){
+        exclude group: 'com.fasterxml.jackson.core'
+        exclude group: 'com.fasterxml.jackson.module'
+    }
+    testImplementation ('io.confluent:kafka-schema-registry:7.4.0:tests'){
+        exclude group: 'com.fasterxml.jackson.core'
+        exclude group: 'com.fasterxml.jackson.module'
+    }
+
+    // Spark Protobuf connector for built-in protobuf functions
+    implementation 'org.apache.spark:spark-protobuf_2.12:3.5.1'
+}
+
+// Configure protobuf plugin
+protobuf {
+    protoc {
+        artifact = "com.google.protobuf:protoc:3.24.4"
+    }
+    generateProtoTasks {
+        all()*.plugins {
+            // Apply the "grpc" plugin whose spec is defined above, without options.
+            // Note the braces cannot be omitted, otherwise the plugin will not be added. This is because of the implicit way NamedDomainObjectContainer binds the methods.
+        }
+    }
+}
+
+// Configure Avro plugin
+avro {
+    // Specify the version of Avro to use
+    sourceCompatibility = '1.11.3'
+    targetCompatibility = '1.11.3'
+}
+
+// Add generated sources to source sets
+sourceSets {
+    main {
+        java {
+            srcDirs 'build/generated/source/proto/main/java'
+            srcDirs 'build/generated-sources/avro'
+        }
+    }
 }
 
 test {

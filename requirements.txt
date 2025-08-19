@@ -1,0 +1,12 @@
+# Google Cloud Data Catalog Lineage API client
+google-cloud-datacatalog-lineage==0.3.14
+
+# Google Auth for service account credentials
+google-auth==2.23.3
+
+# Protocol Buffers support
+protobuf==4.24.4
+
+# Additional Google Cloud dependencies
+google-api-core==2.11.1
+googleapis-common-protos==1.60.0

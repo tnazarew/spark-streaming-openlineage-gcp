@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package io.openlineage.proto;
+import "google/protobuf/timestamp.proto";
+
+option java_package = "io.openlineage.proto";
+option java_outer_classname = "TransactionEventProtos";
+
+
+message TransactionEvent {
+    // id of the transaction
+    int32 id = 1;
+
+    // The transaction value
+    int32 transaction_value = 2;
+
+    string customer_id = 3;
+
+    // The source system that generated this event
+    string country = 4;
+
+    // The timestamp when the event occurred
+    google.protobuf.Timestamp event_time = 5;
+}

@@ -1,0 +1,22 @@
+customer_id,customer_name,nationality,type,credit_limit,registration_date
+CUST001,John Smith,USA,person,50000,2023-01-15
+CUST002,Maria Garcia,Spain,person,75000,2023-02-20
+CUST003,TechCorp Inc,USA,company,500000,2022-11-10
+CUST004,Liu Wei,China,person,30000,2023-03-08
+CUST005,GlobalTrade Ltd,UK,company,1000000,2022-08-25
+CUST006,Ahmed Hassan,Egypt,person,45000,2023-01-30
+CUST007,SoftwareHouse GmbH,Germany,company,750000,2022-12-05
+CUST008,Anna Kowalski,Poland,person,60000,2023-02-14
+CUST009,DataSolutions SA,France,company,800000,2022-10-18
+CUST010,Raj Patel,India,person,40000,2023-03-12
+CUST011,Nordic Enterprises,Norway,company,600000,2023-01-08
+CUST012,Carlos Rodriguez,Mexico,person,55000,2023-02-28
+CUST013,Tokyo Systems KK,Japan,company,900000,2022-09-15
+CUST014,Sarah Johnson,Canada,person,65000,2023-01-22
+CUST015,Mediterranean Trading,Italy,company,450000,2022-11-30
+CUST016,Michael Brown,Australia,person,70000,2023-02-10
+CUST017,Baltic Solutions,Estonia,company,350000,2023-01-05
+CUST018,Emma Wilson,New Zealand,person,48000,2023-03-01
+CUST019,BrazilTech Ltda,Brazil,company,550000,2022-12-20
+CUST020,Olaf Andersen,Denmark,person,52000,2023-02-18
+
